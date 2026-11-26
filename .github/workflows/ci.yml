@@ -1,11 +1,12 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
+  merge_group:
+  schedule:
+    - cron: 11 4 * * 1
 
 permissions:
   contents: read
@@ -16,79 +17,39 @@ env:
   CARGO_INCREMENTAL: 0
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  fmt:
-    name: rustfmt (stable)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
-
   clippy:
-    name: clippy (strict)
-    runs-on: ubuntu-latest
+    name: Format, lint, docs and supply chain
+    runs-on: depot-ubuntu-24.04-4
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-  test:
-    name: test (${{ matrix.os }} · ${{ matrix.rust }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:   [ubuntu-latest, depot-macos-latest, windows-latest]
-        rust: [stable]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
-      - run: cargo nextest run --workspace --all-features
-
-  doc:
-    name: rustdoc (strict)
-    runs-on: ubuntu-latest
-    env:
-      RUSTDOCFLAGS: "-D warnings"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: xtask gen-readmes drift check
         run: cargo run -p xtask --release -- gen-readmes --check
       - run: cargo doc --workspace --no-deps --all-features
 
-  supply-chain:
-    name: deny + machete
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
       - uses: EmbarkStudios/cargo-deny-action@v2
       - uses: taiki-e/install-action@v2
-        with: { tool: cargo-machete }
+        with: {tool: cargo-machete}
       - run: cargo machete --skip-target-dir
 
+    env:
+      RUSTDOCFLAGS: -D warnings
   coverage:
     name: coverage (llvm-cov)
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04-4
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: llvm-tools-preview }
+        with: {components: llvm-tools-preview}
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
@@ -105,3 +66,21 @@ jobs:
         with:
           files: lcov.info
           fail_ci_if_error: false
+
+  test:
+    name: Native tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - depot-macos-latest
+          - depot-windows-2025-4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --workspace --all-features
+
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
